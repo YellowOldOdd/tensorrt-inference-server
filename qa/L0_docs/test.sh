@@ -1,5 +1,5 @@
 #!/bin/bash
-# Copyright (c) 2018, NVIDIA CORPORATION. All rights reserved.
+# Copyright (c) 2018-2019, NVIDIA CORPORATION. All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions
@@ -31,14 +31,30 @@ rm -f $TEST_LOG
 RET=0
 
 apt-get update && \
-    apt-get install -y --no-install-recommends doxygen && \
-    pip install --upgrade sphinx sphinx-rtd-theme nbsphinx exhale && \
-    pip install --upgrade /opt/tensorrtserver/pip/tensorrtserver-*.whl
+    apt-get install -y --no-install-recommends python3-pip zip doxygen && \
+    pip3 install --upgrade setuptools && \
+    pip3 install --upgrade sphinx==2.4.4 sphinx-rtd-theme==0.4.3 nbsphinx==0.6.0 \
+         exhale==0.2.3 breathe==4.14.1 && \
+    pip3 install --upgrade ../pkgs/tensorrtserver*.whl && \
+    pip3 install --upgrade ../pkgs/triton*.whl
 
 set +e
 
-(cd /workspace/docs && \
-        make BUILDDIR=/opt/tensorrtserver/qa/L0_docs/build clean html) > $TEST_LOG 2>&1
+(cd src/clients/c++/api_v1/library &&
+    cp -f request.h.in request.h
+    cp -f request_grpc.h.in request_grpc.h
+    cp -f request_http.h.in request_http.h)
+
+# Set visitor script to be included on every HTML page
+export VISITS_COUNTING_SCRIPT=//assets.adobedtm.com/b92787824f2e0e9b68dc2e993f9bd995339fe417/satelliteLib-7ba51e58dc61bcb0e9311aadd02a0108ab24cc6c.js
+
+(cd docs && rm -f trtis_docs.zip && \
+        make BUILDDIR=/opt/tritonserver/qa/L0_docs/build clean html) > $TEST_LOG 2>&1
+if [ $? -ne 0 ]; then
+    RET=1
+fi
+
+(cd build && zip -r ../trtis_docs.zip html)
 if [ $? -ne 0 ]; then
     RET=1
 fi

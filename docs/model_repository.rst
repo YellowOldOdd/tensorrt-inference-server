@@ -1,5 +1,5 @@
 ..
-  # Copyright (c) 2018, NVIDIA CORPORATION. All rights reserved.
+  # Copyright (c) 2018-2020, NVIDIA CORPORATION. All rights reserved.
   #
   # Redistribution and use in source and binary forms, with or without
   # modification, are permitted provided that the following conditions
@@ -30,18 +30,36 @@
 Model Repository
 ================
 
-The inference server accesses models from a locally accessible file
-path or from Google Cloud Storage. This path is specified when the
-server is started using the -\\-model-store option.
+The Triton Inference Server accesses models from one or more locally
+accessible file paths, from Google Cloud Storage, and from Amazon
+S3. These paths are specified when the server is started using the
+-\\-model-repository option.
 
 For a locally accessible file-system the absolute path must be
-specified, for example, -\\-model-store=/path/to/model/repository. For
-a model repository residing in Google Cloud Storage, the path must be
-prefixed with gs://, for example,
--\\-model-store=gs://bucket/path/to/model/repository.
+specified, for example,
+-\\-model-repository=/path/to/model/repository. For a model repository
+residing in Google Cloud Storage, the path must be prefixed with
+gs://, for example,
+-\\-model-repository=gs://bucket/path/to/model/repository.  For a
+model repository residing in Amazon S3, the path must be prefixed with
+s3://, for example,
+-\\-model-repository=s3://bucket/path/to/model/repository. When
+using a local instance of S3, the prefix s3:// must be followed
+by the host and port (separated by a semicolon) and subsequently
+the bucket path. For example,
+-\\-model-repository=s3://host:port/bucket/path/to/model/repository.
+
+When using Amazon S3, the credentials and default region can be passed
+by using either the `aws config
+<https://docs.aws.amazon.com/cli/latest/userguide/cli-chap-configure.html>_` 
+command or via the respective `environment variables
+<https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-envvars.html>`_.
+If the environment variables are set they will take a higher priority
+and be used by the Triton Inference Server instead of the credentials 
+set using the aws config command. 
 
 :ref:`section-example-model-repository` describes how to create an
-example repository with a couple if image classification models.
+example repository with a couple of image classification models.
 
 An example of a typical model repository layout is shown below::
 
@@ -62,27 +80,29 @@ An example of a typical model repository layout is shown below::
       7/
         model.graphdef
 
-Any number of models may be specified and the inference server will
-attempt to load all models into the CPU and GPU when the server
-starts. The :ref:`Status API <section-api-status>` can be used to
-determine if any models failed to load successfully. The server's
+See :ref:`section-model-management` for discussion of how the
+inference server manages the models specified in the model
+repositories. The :ref:`Status API <section-api-status>` can be used
+to determine if any models failed to load successfully. The server's
 console log will also show the reason for any failures during startup.
 
 The name of the model directory (model_0 and model_1 in the above
-example) must match the name of the model specified in the
-:ref:`model configuration file <section-model-configuration>`,
-config.pbtxt. The model name is used in the :ref:`client API
-<section-client-api>` and :ref:`server API
-<section-inference-server-api>` to identify the model. Each model
-directory must have at least one numeric subdirectory. Each of these
-subdirectories holds a version of the model with the version number
-corresponding to the directory name.
+example) must match the name of the model specified in the :ref:`model
+configuration file <section-model-configuration>`, config.pbtxt. The
+model name is used in the :ref:`client API <section-client-api>` and
+:ref:`server API <section-http-and-grpc-api>` to identify the
+model. Each model directory must have at least one numeric
+subdirectory. Each of these subdirectories holds a version of the
+model with the version number corresponding to the directory name.
 
 For more information about how the model versions are handled by the
 server see :ref:`section-model-versions`.  Within each version
-subdirectory there are one or more model definition files. For more
-information about the model definition files contained in each version
-subdirectory see :ref:`section-model-definition`.
+subdirectory there are one or more model definition files that specify
+the actual model, except for :ref:`ensemble models
+<section-ensemble-models>`. The model definition can be either a
+:ref:`framework-specific model file
+<section-framework-model-definition>` or a shared library implementing
+a :ref:`custom backend <section-custom-backends>`.
 
 The \*_labels.txt files are optional and are used to provide labels for
 outputs that represent classifications. The label file must be
@@ -96,47 +116,9 @@ the output it corresponds to in the :ref:`model configuration
 Modifying the Model Repository
 ------------------------------
 
-By default, changes to the model repository will be detected by a
-running inference server and the server will attempt to add, remove,
-and reload models as necessary based on those changes. Changes to the
-model repository may not be detected immediately because the inference
-server polls the repository periodically. You can control the polling
-interval with the -\\-repository-poll-secs options. The console log or
-the :ref:`Status API <section-api-status>` can be used to determine
-when model repository changes have taken effect. You can disable the
-server from responding to repository changes by using the
--\\-allow-poll-model-repository=false option.
-
-The inference server responds to the following changes:
-
-* Versions may be added and removed from models by adding and removing
-  the corresponding version subdirectory. The inference server will
-  allow in-flight requests to complete even if they are using a
-  removed version of the model. New requests for a removed model
-  version will fail. Depending on the model's :ref:`version policy
-  <section-version-policy>`, changes to the available versions may
-  change which model version is served by default.
-
-* Existing models can be removed from the repository by removing the
-  corresponding model directory.  The inference server will allow
-  in-flight requests to any version of the removed model to
-  complete. New requests for a removed model will fail.
-
-* New models can be added to the repository by adding a new model
-  directory.
-
-* The :ref:`model configuration <section-model-configuration>`
-  (config.pbtxt) can be changed and the inference server will unload
-  and reload the model to pick up the new model configuration.
-
-* Labels files providing labels for outputs that represent
-  classifications can be added, removed, or modified and the inference
-  server will unload and reload the model to pick up the new
-  labels. If a label file is added or removed the corresponding edit
-  to the :cpp:var:`label_filename
-  <nvidia::inferenceserver::ModelOutput::label_filename>` property of
-  the output it corresponds to in the :ref:`model configuration
-  <section-model-configuration>` must be performed at the same time.
+The inference server has multiple execution modes that control how the
+models within the model repository are managed. These modes are
+described in :ref:`section-model-management`.
 
 .. _section-model-versions:
 
@@ -146,15 +128,16 @@ Model Versions
 Each model can have one or more versions available in the model
 repository. Each version is stored in its own, numerically named,
 subdirectory where the name of the subdirectory corresponds to the
-version number of the model. Each model specifies a :ref:`version
+version number of the model. The subdirectories that are not numerically named,
+or that have zero prefix will be ignored. Each model specifies a :ref:`version
 policy <section-version-policy>` that controls which of the versions
-in the model repository are made available by the inference server at
-any given time.
+in the model repository are made available by the server at any given
+time.
 
-.. _section-model-definition:
+.. _section-framework-model-definition:
 
-Model Definition
-----------------
+Framework Model Definition
+--------------------------
 
 Each model version subdirectory must contain at least one model
 definition. By default, the name of this file or directory must be:
@@ -162,6 +145,8 @@ definition. By default, the name of this file or directory must be:
 * **model.plan** for TensorRT models
 * **model.graphdef** for TensorFlow GraphDef models
 * **model.savedmodel** for TensorFlow SavedModel models
+* **model.onnx** for ONNX Runtime ONNX models
+* **model.pt** for PyTorch TorchScript models
 * **model.netdef** and **init_model.netdef** for Caffe2 Netdef models
 
 This default name can be overridden using the *default_model_filename*
@@ -222,7 +207,10 @@ directly or convert it to a GraphDef by using a script like
 or save it as a SavedModel using a `SavedModelBuilder
 <https://www.tensorflow.org/serving/serving_basic>`_ or
 `tf.saved_model.simple_save
-<https://www.tensorflow.org/api_docs/python/tf/saved_model/simple_save>`_.
+<https://www.tensorflow.org/api_docs/python/tf/saved_model/simple_save>`_. If
+you use the Estimator API you can also use
+`Estimator.export_savedmodel
+<https://www.tensorflow.org/api_docs/python/tf/estimator/Estimator#export_savedmodel>`_.
 
 A TensorFlow GraphDef is a single file that by default must be named
 model.graphdef. A minimal model repository for a single TensorFlow
@@ -255,18 +243,7 @@ required the minimal model repository would look like::
         model.savedmodel/
            <saved-model files>
 
-Caffe2 Models
-^^^^^^^^^^^^^
-
-A Caffe2 model definition is called a *NetDef*. A Caffe2 NetDef is a
-single file that by default must be named model.netdef. A minimal
-model repository for a single NetDef model would look like::
-
-  models/
-    <model-name>/
-      config.pbtxt
-      1/
-        model.netdef
+.. _section-tensorrt-tensorflow-models:
 
 TensorRT/TensorFlow Models
 ^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -284,15 +261,170 @@ Capability and so it is typically necessary to use the :ref:`model
 configuration's <section-model-configuration>` *cc_model_filenames*
 property as described above.
 
+As an alternative to creating a TensorRT/TensorFlow model *offline* it
+is possible to use model configuration settings to have the TensorRT
+optimization performed dynamically, when the model is first loaded or
+in response to inference requests. See
+:ref:`section-optimization-policy-tensorrt` for more information.
+
+.. _section-onnx-models:
+
 ONNX Models
 ^^^^^^^^^^^
 
-The inference server cannot directly perform inferencing using `ONNX
-<http://onnx.ai/>`_ models. An ONNX model must be converted to either
-a TensorRT Plan or a Caffe2 NetDef. To convert your ONNX model to a
-TensorRT Plan use either the `ONNX Parser
-<https://docs.nvidia.com/deeplearning/sdk/tensorrt-developer-guide/index.html#api>`_
-included in TensorRT or the `open-source TensorRT backend for ONNX
-<https://github.com/onnx/onnx-tensorrt>`_. Another option is to
-convert your ONNX model to Caffe2 NetDef `as described here
-<https://github.com/pytorch/pytorch/tree/master/caffe2/python/onnx>`_.
+An ONNX model is a single file or a directory containing multiple
+files. By default the file or directory must be named model.onnx.
+Notice that some ONNX models may not be supported by the inference
+server as they are not supported by the underlying ONNX Runtime (due
+to either using `stale ONNX opset version
+<https://github.com/Microsoft/onnxruntime/blob/master/docs/Versioning.md#version-matrix>`_
+or containing operators with `unsupported types
+<https://github.com/microsoft/onnxruntime/issues/1122>`_).
+
+By default the ONNX Runtime uses a default *execution provider* when
+running models. For execution of models on CPU this default execution
+provider does not utilize MKL-DNN. The model configuration
+:ref:`section-optimization-policy` allows you to select the `OpenVino
+<https://01.org/openvinotoolkit>`_ execution provider for CPU
+execution of a model instead of the default execution provider. For
+execution of models on GPU the default CUDA execution provider uses
+CuDNN to accelerate inference. The model configuration
+:ref:`section-optimization-policy` allows you to select the *tensorrt*
+execution provider for GPU which causes the ONNX Runtime to use
+TensorRT to accelerate all or part of the model. See
+:ref:`section-optimization-policy-tensorrt` for more information on
+the *tensorrt* execution provider.
+
+A minimal model repository for a single ONNX model contained in a
+single file would look like::
+
+  models/
+    <model-name>/
+      config.pbtxt
+      1/
+        model.onnx
+
+As described in :ref:`section-generated-model-configuration` the
+config.pbtxt is optional for some models. In cases where it is not
+required the minimal model repository would look like::
+
+  models/
+    <model-name>/
+      1/
+        model.onnx
+
+An ONNX model composed from multiple files must be contained in a
+directory.  By default this directory must be named model.onnx but can
+be overridden using the *default_model_filename* property in the
+:ref:`model configuration <section-model-configuration>`. The main
+model file within this directory must be named model.onnx. A minimal
+model repository for a single ONNX model contained in a directory
+would look like::
+
+  models/
+    <model-name>/
+      config.pbtxt
+      1/
+        model.onnx/
+           model.onnx
+           <other model files>
+
+As described in :ref:`section-generated-model-configuration` the
+config.pbtxt is optional for some models. In cases where it is not
+required the minimal model repository would look like::
+
+  models/
+    <model-name>/
+      1/
+        model.onnx/
+           model.onnx
+           <other model files>
+
+.. _section-pytorch-models:
+
+PyTorch Models
+^^^^^^^^^^^
+
+An PyTorch model is a single file that by default must be named model.pt.
+Notice that a PyTorch model must be traced with an example input and saved as a
+TorchScript Module as shown `here <https://pytorch.org/tutorials/advanced/cpp_export.html>`_.
+It is possible that some models traced with different versions of PyTorch may
+not be supported by the inference server due to changes in the underlying opset.
+A minimal model repository for a single PyTorch model would look like::
+
+  models/
+    <model-name>/
+      config.pbtxt
+      1/
+        model.pt
+
+Caffe2 Models
+^^^^^^^^^^^^^
+
+A Caffe2 model definition is called a *NetDef*. A Caffe2 NetDef is a
+single file that by default must be named model.netdef. A minimal
+model repository for a single NetDef model would look like::
+
+  models/
+    <model-name>/
+      config.pbtxt
+      1/
+        model.netdef
+
+.. _section-custom-backends:
+
+Custom Backends
+---------------
+
+A model using a custom backend is represented in the model repository
+in the same way as models using a deep-learning framework backend.
+Each model version subdirectory must contain at least one shared
+library that implements the custom model backend. By default, the name
+of this shared library must be **libcustom.so** but the default name
+can be overridden using the *default_model_filename* property in the
+:ref:`model configuration <section-model-configuration>`.
+
+Optionally, a model can provide multiple shared libraries, each
+targeted at a GPU with a different `Compute Capability
+<https://developer.nvidia.com/cuda-gpus>`_. See the
+*cc_model_filenames* property in the :ref:`model configuration
+<section-model-configuration>` for description of how to specify
+different shared libraries for different compute capabilities.
+
+Currently, only model repositories on the local filesystem support
+custom backends. A custom backend contained in a model repository in
+cloud storage (for example, a repository accessed with the gs://
+prefix or s3:// prefix as described above) cannot be loaded by the
+inference server.
+
+Custom Backend API
+^^^^^^^^^^^^^^^^^^
+
+A custom backend must implement the C interface defined in `custom.h
+<https://github.com/NVIDIA/triton-inference-server/blob/master/src/backends/custom/custom.h>`_. The
+interface is also documented in the API Reference.
+
+Example Custom Backend
+^^^^^^^^^^^^^^^^^^^^^^
+
+Several example custom backends can be found in the `src/custom
+directory
+<https://github.com/NVIDIA/triton-inference-server/tree/master/src/custom>`_. For
+more information on building your own custom backends as well as a
+simple example you can build yourself, see
+:ref:`section-building-a-custom-backend`.
+
+.. _section-ensemble-backends:
+
+Ensemble Backends
+---------------
+
+A model using an ensemble backend is represented in the model repository
+in the same way as models using a deep-learning framework backend.
+Currently, the ensemble backend does not require any version specific data,
+so each model version subdirectory must exist but should be empty.
+
+An example of an ensemble backend in a model repository can be found in the
+`docs/examples/ensemble_model_repository/preprocess_resnet50_ensemble
+<https://github.com/NVIDIA/triton-inference-server/tree/master/docs/examples/ensemble_model_repository/preprocess_resnet50_ensemble>`_
+directory.

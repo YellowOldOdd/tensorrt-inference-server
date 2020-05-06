@@ -1,5 +1,5 @@
 ..
-  # Copyright (c) 2018, NVIDIA CORPORATION. All rights reserved.
+  # Copyright (c) 2018-2020, NVIDIA CORPORATION. All rights reserved.
   #
   # Redistribution and use in source and binary forms, with or without
   # modification, are permitted provided that the following conditions
@@ -28,9 +28,9 @@
 Installing the Server
 =====================
 
-The TensorRT Inference Server is available as a pre-built Docker
+The Triton Inference Server is available as a pre-built Docker
 container or you can :ref:`build it from source
-<section-building-the-server>`.
+<section-building>`.
 
 .. _section-installing-prebuilt-containers:
 
@@ -38,10 +38,7 @@ Installing Prebuilt Containers
 ------------------------------
 
 The inference server is provided as a pre-built container on the
-`NVIDIA GPU Cloud (NGC) <https://ngc.nvidia.com>`_.  Before pulling the
-container you must have access and be logged into the NGC container
-registry as explained in the `NGC Getting Started Guide
-<http://docs.nvidia.com/ngc/ngc-getting-started-guide/index.html>`_.
+`NVIDIA GPU Cloud (NGC) <https://ngc.nvidia.com>`_.
 
 Before you can pull a container from the NGC container registry, you
 must have Docker and nvidia-docker installed. For DGX users, this is
@@ -51,10 +48,10 @@ For users other than DGX, follow the `nvidia-docker installation
 documentation <https://github.com/NVIDIA/nvidia-docker>`_ to install
 the most recent version of CUDA, Docker, and nvidia-docker.
 
-After performing the above setup, you can pull the TensorRT Inference
+After performing the above setup, you can pull the Triton Inference
 Server container using the following command::
 
-  docker pull nvcr.io/nvidia/tensorrtserver:18.11-py3
+  docker pull nvcr.io/nvidia/tritonserver:20.03-py3
 
-Replace *18.11* with the version of the inference server that you want
-to pull.
+Replace *20.03* with the version of inference server that you want to
+pull.

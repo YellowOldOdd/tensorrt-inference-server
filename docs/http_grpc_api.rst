@@ -1,5 +1,5 @@
 ..
-  # Copyright (c) 2018, NVIDIA CORPORATION. All rights reserved.
+  # Copyright (c) 2018-2020, NVIDIA CORPORATION. All rights reserved.
   #
   # Redistribution and use in source and binary forms, with or without
   # modification, are permitted provided that the following conditions
@@ -25,12 +25,13 @@
   # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
   # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-.. _section-inference-server-api:
+.. _section-http-and-grpc-api:
 
-Inference Server API
-====================
+HTTP and GRPC API
+=================
 
-The inference server exposes both HTTP and GRPC endpoints. Three endpoints with identical functionality are exposed for each protocol.
+The Triton Inference Server exposes both HTTP and GRPC
+endpoints. The following endpoints are exposed for each protocol.
 
 * :ref:`section-api-health`: The server health API for determining
   server liveness and readiness.
@@ -38,17 +39,27 @@ The inference server exposes both HTTP and GRPC endpoints. Three endpoints with 
 * :ref:`section-api-status`: The server status API for getting
   information about the server and about the models being served.
 
+* :ref:`section-api-model-control`: The server model-control API for
+  explicitly loading and unloading models.
+
 * :ref:`section-api-inference`: The inference API that accepts model
   inputs, runs inference and returns the requested outputs.
 
-The HTTP endpoints can be used directly as described in this section,
-but for most use-cases, the preferred way to access the inference
-server is via the `C++ and Python Client libraries
-<section-client-libraries-and-examples>`.
+The inference server also exposes an endpoint based on GRPC streams that is
+only available when using the GRPC protocol:
 
-The GRPC endpoints can also be used via the `C++ and Python Client
-libraries <section-client-libraries-and-examples>` or a GRPC-generated
-API can be used directly as shown in the grpc_image_client.py example.
+* :ref:`section-api-stream-inference`: The stream inference API is the same
+  as the Inference API, except that once the connection is established,
+  the requests are sent in the same connection until it is closed.
+
+The HTTP endpoints can be used directly as described in this section,
+but for most use-cases the preferred way to access the inference
+server is via the :ref:`C++ and Python Client libraries
+<section-client-libraries>`.
+
+The GRPC endpoints can also be used via the :ref:`C++ and Python
+Client libraries <section-client-libraries>` or a GRPC-generated API
+can be used directly as shown in the grpc_image_client.py example.
 
 .. _section-api-health:
 
@@ -91,12 +102,13 @@ Performing an HTTP GET to /api/status returns status information about
 the server and all the models being served. Performing an HTTP GET to
 /api/status/<model name> returns information about the server and the
 single model specified by <model name>. The server status is returned
-in the HTTP response body in either text format (the default) or in
-binary format if query parameter format=binary is specified (for
-example, /api/status?format=binary). The success or failure of the
-status request is indicated in the HTTP response code and the
-**NV-Status** response header. The **NV-Status** response header
-returns a text protobuf formatted :cpp:var:`RequestStatus
+in the HTTP response body in either text format (the default), in binary
+format if query parameter format=binary is specified (for example,
+/api/status?format=binary) or in json format if query parameter
+format=json is specified (for example, /api/status?format=json).
+The success or failure of the status request is indicated in the HTTP
+response code and the **NV-Status** response header. The **NV-Status**
+response header returns a text protobuf formatted :cpp:var:`RequestStatus
 <nvidia::inferenceserver::RequestStatus>` message.
 
 For GRPC the :cpp:var:`GRPCService
@@ -110,6 +122,29 @@ message indicating success or failure.
 For either protocol the status itself is returned as a
 :cpp:var:`ServerStatus <nvidia::inferenceserver::ServerStatus>`
 message.
+
+.. _section-api-model-control:
+
+Model Control
+-------------
+
+Performing an HTTP POST to /api/modelcontrol/<load|unload>/<model
+name> loads or unloads a model from the inference server as described
+in :ref:`section-model-management`.
+
+The success or failure of the inference request is indicated in the
+HTTP response code and the **NV-Status** response header. The
+**NV-Status** response header returns a text protobuf formatted
+:cpp:var:`RequestStatus <nvidia::inferenceserver::RequestStatus>`
+message.
+
+For GRPC the :cpp:var:`GRPCService
+<nvidia::inferenceserver::GRPCService>` uses the
+:cpp:var:`ModelControlRequest
+<nvidia::inferenceserver::ModelControlRequest>` and
+:cpp:var:`ModelControlResponse
+<nvidia::inferenceserver::ModelControlResponse>` messages to implement
+the endpoint.
 
 .. _section-api-inference:
 
@@ -128,21 +163,31 @@ The request uses the **NV-InferRequest** header to communicate an
 <nvidia::inferenceserver::InferRequestHeader>` message that describes
 the input tensors and the requested output tensors. For example, for a
 resnet50 model the following **NV-InferRequest** header indicates that
-a batch-size 1 request is being made with input size of 602112 bytes
-(3 * 224 * 224 * sizeof(FP32)), and that the result of the tensor
-named "output" should be returned as the top-3 classification values::
+a batch-size 1 request is being made with a single input named
+"input", and that the result of the tensor named "output" should be
+returned as the top-3 classification values::
 
-  NV-InferRequest: batch_size: 1 input { name: "input" byte_size: 602112 } output { name: "output" byte_size: 4000 cls { count: 3 } }
+  NV-InferRequest: batch_size: 1 input { name: "input" } output { name: "output" cls { count: 3 } }
 
 The input tensor values are communicated in the body of the HTTP POST
 request as raw binary in the order as the inputs are listed in the
 request header.
 
-The inference results are returned in the body of the HTTP response to
-the POST request. For outputs where full result tensors were
-requested, the result values are communicated in the body of the
-response in the order as the outputs are listed in the request
-header. After those, an :cpp:var:`InferResponseHeader
+The HTTP response includes an **NV-InferResponse** header that
+communicates an :cpp:var:`InferResponseHeader
+<nvidia::inferenceserver::InferResponseHeader>` message that describes
+the outputs. For example the above response could return the
+following::
+
+  NV-InferResponse: model_name: "mymodel" model_version: 1 batch_size: 1 output { name: "output" raw { dims: 4 dims: 4 batch_byte_size: 64 } }
+
+This response shows that the output in a tensor with shape [ 4, 4 ]
+and has a size of 64 bytes. The output tensor contents are returned in
+the body of the HTTP response to the POST request. For outputs where
+full result tensors were requested, the result values are communicated
+in the body of the response in the order as the outputs are listed in
+the **NV-InferResponse** header. After those, an
+:cpp:var:`InferResponseHeader
 <nvidia::inferenceserver::InferResponseHeader>` message is appended to
 the response body. The :cpp:var:`InferResponseHeader
 <nvidia::inferenceserver::InferResponseHeader>` message is returned in
@@ -150,15 +195,14 @@ either text format (the default) or in binary format if query
 parameter format=binary is specified (for example,
 /api/infer/foo?format=binary).
 
-For example, assuming outputs specified in the
-:cpp:var:`InferResponseHeader
-<nvidia::inferenceserver::InferResponseHeader>` in order are
-“output0”, “output1”, …, “outputn”, the response body would contain::
+For example, assuming an inference request for a model that has 'n'
+outputs, the outputs specified in the **NV-InferResponse** header in
+order are “output[0]”, ..., “output[n-1]” the response body would
+contain::
 
-  <raw binary tensor values for output0, if raw output was requested for output0>
-  <raw binary tensor values for output1, if raw output was requested for output1>
+  <raw binary tensor values for output[0] >
   ...
-  <raw binary tensor values for outputn, if raw output was requested for outputn>
+  <raw binary tensor values for output[n-1] >
   <text or binary encoded InferResponseHeader proto>
 
 The success or failure of the inference request is indicated in the
@@ -166,6 +210,33 @@ HTTP response code and the **NV-Status** response header. The
 **NV-Status** response header returns a text protobuf formatted
 :cpp:var:`RequestStatus <nvidia::inferenceserver::RequestStatus>`
 message.
+
+For GRPC the :cpp:var:`GRPCService
+<nvidia::inferenceserver::GRPCService>` uses the
+:cpp:var:`InferRequest <nvidia::inferenceserver::InferRequest>` and
+:cpp:var:`InferResponse <nvidia::inferenceserver::InferResponse>`
+messages to implement the endpoint. The response includes a
+:cpp:var:`RequestStatus <nvidia::inferenceserver::RequestStatus>`
+message indicating success or failure, :cpp:var:`InferResponseHeader
+<nvidia::inferenceserver::InferResponseHeader>` message giving
+response meta-data, and the raw output tensors.
+
+.. _section-api-stream-inference:
+
+Stream Inference
+----------------
+
+Some applications may request that multiple requests be sent using one
+persistent connection rather than potentially establishing multiple
+connections. For instance, in the case where multiple instances of
+Triton Inference Server are created with the purpose of load
+balancing, requests sent in different connections may be routed to
+different server instances. This scenario will not fit the need if the
+requests are correlated, where they are expected to be processed by
+the same model instance, like inferencing with :ref:`stateful models
+<section-stateful-models>`. By using stream inference, the requests
+will be sent to the same server instance once the connection is
+established.
 
 For GRPC the :cpp:var:`GRPCService
 <nvidia::inferenceserver::GRPCService>` uses the

@@ -1,4 +1,4 @@
-// Copyright (c) 2018, NVIDIA CORPORATION. All rights reserved.
+// Copyright (c) 2018-2020, NVIDIA CORPORATION. All rights reserved.
 //
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions
@@ -28,28 +28,24 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <atomic>
+#include <map>
 #include <string>
 #include <thread>
-#include <unordered_map>
-
-#include "grpc++/server.h"
+#include <vector>
 
 #include "src/core/api.pb.h"
-#include "src/core/infer.h"
 #include "src/core/model_config.pb.h"
-#include "src/core/request_status.pb.h"
+#include "src/core/model_repository_manager.h"
+#include "src/core/provider.h"
 #include "src/core/server_status.h"
 #include "src/core/server_status.pb.h"
-#include "tensorflow/core/lib/core/status.h"
-#include "tensorflow_serving/model_servers/server_core.h"
-#include "tensorflow_serving/util/net_http/server/public/httpserver.h"
-
-#include "src/nvrpc/Server.h"
-
-
-namespace tfs = tensorflow::serving;
+#include "src/core/status.h"
 
 namespace nvidia { namespace inferenceserver {
+
+class InferenceBackend;
+
+enum ModelControlMode { MODE_NONE, MODE_POLL, MODE_EXPLICIT };
 
 // Inference server information.
 class InferenceServer {
@@ -57,58 +53,154 @@ class InferenceServer {
   // Construct an inference server.
   InferenceServer();
 
-  // Initialize the server.
-  // Return true on success, false otherwise.
-  bool Init(int argc, char** argv);
+  // Initialize the server. Return true on success, false otherwise.
+  Status Init();
 
-  // Close the server.
-  // Return true if all models are unloaded, false if exit timeout occurs.
-  bool Close();
+  // Stop the server.  Return true if all models are unloaded, false
+  // if exit timeout occurs.
+  Status Stop();
 
-  // Wait for server. Does not return until server is shutdown.
-  void Wait();
+  // Check the model repository for changes and update server state
+  // based on those changes.
+  Status PollModelRepository();
 
-  // Run health check indicated by 'mode'
-  void HandleHealth(
-    RequestStatus* request_status, bool* health, const std::string& mode);
+  // Server and model health
+  Status IsLive(bool* live);
+  Status IsReady(bool* ready);
+  Status ModelIsReady(
+      const std::string& model_name, const int64_t model_version, bool* ready);
+  Status ModelReadyVersions(
+      const std::string& model_name, std::vector<int64_t>* versions);
 
-  // Run profile 'cmd' for profiling all the all GPU devices
-  void HandleProfile(RequestStatus* request_status, const std::string& cmd);
+  // Perform inference on the given input for specified model. Status
+  // is returned in the OnCompleteInfer callback.
+  void InferAsync(
+      const std::shared_ptr<InferenceBackend>& backend,
+      const std::shared_ptr<InferenceRequest>& request,
+      const std::shared_ptr<InferResponseProvider>& response_provider,
+      const std::shared_ptr<ModelInferStats>& infer_stats,
+      std::function<void(const Status&)> OnCompleteInfer);
 
-  // Perform inference on the given input for specified model and
-  // update RequestStatus object with the status of the inference.
-  void HandleInfer(
-    RequestStatus* request_status,
-    std::shared_ptr<InferRequestProvider> request_provider,
-    std::shared_ptr<InferResponseProvider> response_provider,
-    std::shared_ptr<ModelInferStats> infer_stats,
-    std::function<void()> OnCompleteInferRPC, bool async_frontend);
+  // Update the ServerStatus object with the status of the model. If
+  // 'model_name' is empty, update with the status of all models.
+  Status GetStatus(ServerStatus* server_status, const std::string& model_name);
 
-  // Update the RequestStatus object and ServerStatus object with the
-  // status of the model. If 'model_name' is empty, update with the
-  // status of all models.
-  void HandleStatus(
-    RequestStatus* request_status, ServerStatus* server_status,
-    const std::string& model_name);
+  // Update the ModelRepositoryIndex object with the index of the model
+  // repository.
+  Status GetModelRepositoryIndex(ModelRepositoryIndex* repository_index);
 
-  // Return the server version.
-  const std::string& Version() const { return version_; }
+  // Load the corresponding model. Reload the model if it has been loaded.
+  Status LoadModel(const std::string& model_name);
 
-  // Return the ID of the server.
-  const std::string& Id() const { return id_; }
+  // Unload the corresponding model.
+  Status UnloadModel(const std::string& model_name);
 
   // Return the ready state for the server.
   ServerReadyState ReadyState() const { return ready_state_; }
 
-  // Return the HTTP port of the server, or -1 if HTTP is not enabled.
-  int HttpPort() const { return http_port_; }
+  // Return the server version.
+  const std::string& Version() const { return version_; }
 
-  // Return the gRPC port of the server, or -1 if gRPC is not enabled.
-  int GrpcPort() const { return grpc_port_; }
+  // Return the server extensions.
+  const std::vector<const char*>& Extensions() const { return extensions_; }
 
-  // Return the metrics port of the server, or -1 if metrics are not
-  // enabled.
-  int MetricsPort() const { return metrics_port_; }
+  // Get / set the ID of the server.
+  const std::string& Id() const { return id_; }
+  void SetId(const std::string& id) { id_ = id; }
+
+  // Get / set the protocol version of the server.
+  uint32_t ProtocolVersion() const { return protocol_version_; }
+  void SetProtocolVersion(const uint32_t v)
+  {
+    protocol_version_ = v;
+    status_manager_->SetProtocolVersion(v);
+  }
+
+  // Get / set the model repository path
+  const std::set<std::string>& ModelRepositoryPaths() const
+  {
+    return model_repository_paths_;
+  }
+
+  void SetModelRepositoryPaths(const std::set<std::string>& p)
+  {
+    model_repository_paths_ = p;
+  }
+
+  // Get / set model control mode.
+  ModelControlMode GetModelControlMode() const { return model_control_mode_; }
+  void SetModelControlMode(ModelControlMode m) { model_control_mode_ = m; }
+
+  // Get / set the startup models
+  const std::set<std::string>& StartupModels() const { return startup_models_; }
+  void SetStartupModels(const std::set<std::string>& m) { startup_models_ = m; }
+
+  // Get / set strict model configuration enable.
+  bool StrictModelConfigEnabled() const { return strict_model_config_; }
+  void SetStrictModelConfigEnabled(bool e) { strict_model_config_ = e; }
+
+  // Get / set the pinned memory pool byte size.
+  int64_t PinnedMemoryPoolByteSize() const { return pinned_memory_pool_size_; }
+  void SetPinnedMemoryPoolByteSize(int64_t s)
+  {
+    pinned_memory_pool_size_ = std::max((int64_t)0, s);
+  }
+
+  // Get / set CUDA memory pool size
+  const std::map<int, uint64_t>& CudaMemoryPoolByteSize() const
+  {
+    return cuda_memory_pool_size_;
+  }
+
+  void SetCudaMemoryPoolByteSize(const std::map<int, uint64_t>& s)
+  {
+    cuda_memory_pool_size_ = s;
+  }
+
+  // Get / set the minimum support CUDA compute capability.
+  double MinSupportedComputeCapability() const
+  {
+    return min_supported_compute_capability_;
+  }
+  void SetMinSupportedComputeCapability(double c)
+  {
+    min_supported_compute_capability_ = c;
+  }
+
+  // Get / set strict readiness enable.
+  bool StrictReadinessEnabled() const { return strict_readiness_; }
+  void SetStrictReadinessEnabled(bool e) { strict_readiness_ = e; }
+
+  // Get / set the server exit timeout, in seconds.
+  int32_t ExitTimeoutSeconds() const { return exit_timeout_secs_; }
+  void SetExitTimeoutSeconds(int32_t s) { exit_timeout_secs_ = std::max(0, s); }
+
+  // Get / set Tensorflow soft placement enable.
+  bool TensorFlowSoftPlacementEnabled() const
+  {
+    return tf_soft_placement_enabled_;
+  }
+  void SetTensorFlowSoftPlacementEnabled(bool e)
+  {
+    tf_soft_placement_enabled_ = e;
+  }
+
+  // Get / set Tensorflow GPU memory fraction.
+  float TensorFlowGPUMemoryFraction() const { return tf_gpu_memory_fraction_; }
+  void SetTensorFlowGPUMemoryFraction(float f) { tf_gpu_memory_fraction_ = f; }
+
+  // Get / set Tensorflow vGPU memory limits
+  const std::map<int, std::pair<int, uint64_t>>& TensorFlowVGPUMemoryLimits()
+      const
+  {
+    return tf_vgpu_memory_limits_;
+  }
+
+  void SetTensorFlowVGPUMemoryLimits(
+      const std::map<int, std::pair<int, uint64_t>>& memory_limits)
+  {
+    tf_vgpu_memory_limits_ = memory_limits;
+  }
 
   // Return the status manager for this server.
   std::shared_ptr<ServerStatusManager> StatusManager() const
@@ -116,64 +208,50 @@ class InferenceServer {
     return status_manager_;
   }
 
+  // Return the requested InferenceBackend object.
+  Status GetInferenceBackend(
+      const std::string& model_name, const int64_t model_version,
+      std::shared_ptr<InferenceBackend>* backend)
+  {
+    return model_repository_manager_->GetInferenceBackend(
+        model_name, model_version, backend);
+  }
+
  private:
-  // Start server running and listening on gRPC and/or HTTP endpoints.
-  void Start();
-
-  std::unique_ptr<nvrpc::Server> StartGrpcServer();
-
-  std::unique_ptr<tfs::net_http::HTTPServerInterface> StartHttpServer();
-
-  tensorflow::Status ParseProtoTextFile(
-    const std::string& file, google::protobuf::Message* message);
-
-  tfs::PlatformConfigMap BuildPlatformConfigMap(
-    float tf_gpu_memory_fraction, bool tf_allow_soft_placement);
-
   // Return the uptime of the server in nanoseconds.
   uint64_t UptimeNs() const;
 
-  // Return the next request ID for this server.
-  uint64_t NextRequestId() { return next_request_id_++; }
-
-  // Helper function to perform repeated task during initialization.
-  void LogInitError(const std::string& msg);
-
-  std::string version_;
+  const std::string version_;
   std::string id_;
+  std::vector<const char*> extensions_;
 
-  // Use -1 for a port to indicate the corresponding service is
-  // disabled
-  int http_port_;
-  int grpc_port_;
-  int metrics_port_;
+  uint64_t start_time_ns_;
+  uint32_t protocol_version_;
 
-  std::string model_store_path_;
-  int http_thread_cnt_;
+  std::set<std::string> model_repository_paths_;
+  std::set<std::string> startup_models_;
+  ModelControlMode model_control_mode_;
   bool strict_model_config_;
   bool strict_readiness_;
-  bool profiling_enabled_;
-  bool poll_model_repository_enabled_;
-  uint32_t repository_poll_secs_;
   uint32_t exit_timeout_secs_;
-  uint64_t start_time_ns_;
+  uint64_t pinned_memory_pool_size_;
+  std::map<int, uint64_t> cuda_memory_pool_size_;
+  double min_supported_compute_capability_;
+
+  // Tensorflow options
+  bool tf_soft_placement_enabled_;
+  float tf_gpu_memory_fraction_;
+  std::map<int, std::pair<int, uint64_t>> tf_vgpu_memory_limits_;
 
   // Current state of the inference server.
   ServerReadyState ready_state_;
-
-  // Each request is assigned a unique id.
-  std::atomic<uint64_t> next_request_id_;
 
   // Number of in-flight requests. During shutdown we attempt to wait
   // for all in-flight requests to complete before exiting.
   std::atomic<uint64_t> inflight_request_counter_;
 
-  std::unique_ptr<tfs::ServerCore> core_;
   std::shared_ptr<ServerStatusManager> status_manager_;
-
-  std::unique_ptr<tfs::net_http::HTTPServerInterface> http_server_;
-
-  std::unique_ptr<nvrpc::Server> grpc_server_;
+  std::unique_ptr<ModelRepositoryManager> model_repository_manager_;
 };
 
 }}  // namespace nvidia::inferenceserver

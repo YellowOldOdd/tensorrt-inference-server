@@ -1,4 +1,4 @@
-# Copyright (c) 2018, NVIDIA CORPORATION. All rights reserved.
+# Copyright (c) 2018-2020, NVIDIA CORPORATION. All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions
@@ -50,7 +50,7 @@ import textwrap
 
 # -- Project information -----------------------------------------------------
 
-project = u'NVIDIA TensorRT Inference Server'
+project = u'NVIDIA Triton Inference Server'
 copyright = u'2018, NVIDIA Corporation'
 author = u'NVIDIA Corporation'
 
@@ -78,8 +78,8 @@ release = str(version_long)
 # link here as well:
 version = version + """<br/>
 Version select: <select onChange="window.location.href = this.value" onFocus="this.selectedIndex = -1">
-    <option value="https://docs.nvidia.com/deeplearning/sdk/tensorrt-inference-server-guide/docs/index.html">Current release</option>
-    <option value="https://docs.nvidia.com/deeplearning/sdk/tensorrt-inference-server-master-branch-guide/docs/index.html">master (unstable)</option>
+    <option value="https://docs.nvidia.com/deeplearning/sdk/triton-inference-server-guide/docs/index.html">Current release</option>
+    <option value="https://docs.nvidia.com/deeplearning/sdk/triton-inference-server-master-branch-guide/docs/index.html">master (unstable)</option>
     <option value="https://docs.nvidia.com/deeplearning/sdk/inference-server-archived/index.html">Older releases</option>
 </select>"""
 
@@ -104,7 +104,7 @@ extensions = [
 ]
 
 # Add any paths that contain templates here, relative to this directory.
-templates_path = ['templates']
+templates_path = ['_templates']
 
 # The suffix(es) of source filenames.
 # You can specify multiple suffix as a list of string:
@@ -132,9 +132,9 @@ pygments_style = 'sphinx'
 
 # Setup the breathe extension
 breathe_projects = {
-    "BreatheTRTIS": "./doxyoutput/xml"
+    "BreatheTritonServer": "./doxyoutput/xml"
 }
-breathe_default_project = "BreatheTRTIS"
+breathe_default_project = "BreatheTritonServer"
 
 # Setup the exhale extension
 exhale_args = {
@@ -150,7 +150,7 @@ exhale_args = {
     "exhaleExecutesDoxygen": True,
     "exhaleDoxygenStdin": textwrap.dedent('''
         JAVADOC_AUTOBRIEF = YES
-        INPUT = ../src/clients/c++/request.h
+    INPUT = ../src/core/trtserver.h ../src/clients/c++/api_v1/library/request.h ../src/clients/c++/api_v1/library/request_grpc.h ../src/clients/c++/api_v1/library/request_http.h ../src/backends/custom/custom.h ../src/custom/sdk/custom_instance.h
     ''')
 }
 
@@ -174,7 +174,7 @@ html_theme_path = [sphinx_rtd_theme.get_html_theme_path()]
 # documentation.
 #
 html_theme_options = {
-    'canonical_url': 'https://docs.nvidia.com/deeplearning/sdk/tensorrt-inference-server-guide/docs/index.html',
+    'canonical_url': 'https://docs.nvidia.com/deeplearning/sdk/triton-inference-server-guide/docs/index.html',
     'collapse_navigation': False,
     'display_version': True,
     'logo_only': False,
@@ -199,7 +199,7 @@ html_theme_options = {
 # -- Options for HTMLHelp output ---------------------------------------------
 
 # Output file base name for HTML help builder.
-htmlhelp_basename = 'NVIDIATRTISdoc'
+htmlhelp_basename = 'NVIDIATritonServerdoc'
 
 
 # -- Options for LaTeX output ------------------------------------------------
@@ -226,7 +226,7 @@ latex_elements = {
 # (source start file, target name, title,
 #  author, documentclass [howto, manual, or own class]).
 latex_documents = [
-    (master_doc, 'NVIDIATRTIS.tex', u'NVIDIA TensorRT Inference Server Documentation',
+    (master_doc, 'NVIDIATritonServer.tex', u'NVIDIA Triton Inference Server Documentation',
      u'NVIDIA Corporation', 'manual'),
 ]
 
@@ -236,7 +236,7 @@ latex_documents = [
 # One entry per manual page. List of tuples
 # (source start file, name, description, authors, manual section).
 man_pages = [
-    (master_doc, 'nvidiatrtis', u'NVIDIA TensorRT Inference Server Documentation',
+    (master_doc, 'nvidiatritonserver', u'NVIDIA Triton Inference Server Documentation',
      [author], 1)
 ]
 
@@ -247,14 +247,21 @@ man_pages = [
 # (source start file, target name, title, author,
 #  dir menu entry, description, category)
 texinfo_documents = [
-    (master_doc, 'NVIDIATRTIS', u'NVIDIA TensorRT Inference Server Documentation',
-     author, 'NVIDIATRTIS', 'One line description of project.',
+    (master_doc, 'NVIDIATritonServer', u'NVIDIA Triton Inference Server Documentation',
+     author, 'NVIDIATritonServer', 'One line description of project.',
      'Miscellaneous'),
 ]
 
 
 # -- Extension configuration -------------------------------------------------
-extlinks = {'issue': ('https://github.com/NVIDIA/tensorrt-inference-server/issues/%s',
+extlinks = {'issue': ('https://github.com/NVIDIA/triton-inference-server/issues/%s',
                       'issue '),
-            'fileref': ('https://github.com/NVIDIA/tensorrt-inference-server/tree/' +
+            'fileref': ('https://github.com/NVIDIA/triton-inference-server/tree/' +
                         (git_sha if git_sha != u'0000000' else "master") + '/%s', ''),}
+
+def setup(app):
+    # If envvar is set then the file is expected to contain a script
+    # that is added to every documentation page
+    visitor_script = os.getenv("VISITS_COUNTING_SCRIPT")
+    if visitor_script:
+        app.add_js_file(visitor_script)

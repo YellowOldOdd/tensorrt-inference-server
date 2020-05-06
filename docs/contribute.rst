@@ -1,5 +1,5 @@
 ..
-  # Copyright (c) 2018, NVIDIA CORPORATION. All rights reserved.
+  # Copyright (c) 2018-2020, NVIDIA CORPORATION. All rights reserved.
   #
   # Redistribution and use in source and binary forms, with or without
   # modification, are permitted provided that the following conditions
@@ -28,10 +28,10 @@
 Contributing
 ============
 
-Contributions to TensorRT Inference Server are more than welcome. To
+Contributions to Triton Inference Server are more than welcome. To
 contribute make a pull request and follow the guidelines outlined in
 the `CONTRIBUTING
-<https://github.com/NVIDIA/tensorrt-inference-server/blob/master/CONTRIBUTING.md>`_
+<https://github.com/NVIDIA/triton-inference-server/blob/master/CONTRIBUTING.md>`_
 document.
 
 Coding Convention
@@ -43,3 +43,9 @@ before submitting a pull request::
 
   $ apt-get install clang-format clang-format-6.0
   $ clang-format-6.0 --style=file -i *.proto *.cc *.h
+
+For convenience there is a format.py script in tools/ that can be used
+to clang-format all files within the repo::
+
+  $ cd .../triton-inference-server    # top-level of repo
+  $ python format.py *

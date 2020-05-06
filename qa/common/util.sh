@@ -1,4 +1,4 @@
-# Copyright (c) 2018, NVIDIA CORPORATION. All rights reserved.
+# Copyright (c) 2018-2019, NVIDIA CORPORATION. All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions
@@ -24,15 +24,10 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-# SERVER must be defined
-if [ -z "$SERVER" ]; then
-    echo "=== $SERVER is empty"
-    exit 1
-fi
-
 SERVER_LOG=${SERVER_LOG:=./server.log}
-FILE_TIMEOUT=${FILE_TIMEOUT:=10}
-SERVER_TIMEOUT=${SERVER_TIMEOUT:=60}
+SERVER_TIMEOUT=${SERVER_TIMEOUT:=120}
+SERVER_LD_PRELOAD=${SERVER_LD_PRELOAD:=""}
+MONITOR_FILE_TIMEOUT=${MONITOR_FILE_TIMEOUT:=10}
 
 # Sets WAIT_RET to 0 on success, 1 on failure
 function wait_for_file_str() {
@@ -63,14 +58,20 @@ function wait_for_file_str() {
 # Wait until server health endpoint show ready. Sets WAIT_RET to 0 on
 # success, 1 on failure
 function wait_for_server_ready() {
+    local spid="$1"; shift
     local wait_time_secs="${1:-30}"; shift
 
     WAIT_RET=0
 
     local wait_secs=$wait_time_secs
     until test $wait_secs -eq 0 ; do
-        sleep 1;
+        if ! kill -0 $spid; then
+            echo "=== Server not running."
+            WAIT_RET=1
+            return
+        fi
 
+        sleep 1;
 
         set +e
         code=`curl -s -w %{http_code} localhost:8000/api/health/ready`
@@ -86,17 +87,55 @@ function wait_for_server_ready() {
     WAIT_RET=1
 }
 
-# Wait until server health endpoint show live. Sets WAIT_RET to 0 on
+# Wait until HTTP V2 server health endpoint show ready. Sets WAIT_RET to 0 on
 # success, 1 on failure
-function wait_for_server_live() {
+function wait_for_server_ready_v2() {
+    local spid="$1"; shift
     local wait_time_secs="${1:-30}"; shift
 
     WAIT_RET=0
 
     local wait_secs=$wait_time_secs
     until test $wait_secs -eq 0 ; do
+        if ! kill -0 $spid; then
+            echo "=== Server not running."
+            WAIT_RET=1
+            return
+        fi
+
         sleep 1;
 
+        set +e
+        code=`curl -s -w %{http_code} localhost:8000/v2/health/ready`
+        set -e
+        if [ "$code" == "200" ]; then
+            return
+        fi
+
+        ((wait_secs--));
+    done
+
+    echo "=== Timeout $wait_time_secs secs. Server not ready."
+    WAIT_RET=1
+}
+
+# Wait until server health endpoint show live. Sets WAIT_RET to 0 on
+# success, 1 on failure
+function wait_for_server_live() {
+    local spid="$1"; shift
+    local wait_time_secs="${1:-30}"; shift
+
+    WAIT_RET=0
+
+    local wait_secs=$wait_time_secs
+    until test $wait_secs -eq 0 ; do
+        if ! kill -0 $spid; then
+            echo "=== Server not running."
+            WAIT_RET=1
+            return
+        fi
+
+        sleep 1;
 
         set +e
         code=`curl -s -w %{http_code} localhost:8000/api/health/live`
@@ -112,21 +151,122 @@ function wait_for_server_live() {
     WAIT_RET=1
 }
 
+# Wait until HTTP V2 server health endpoint show live. Sets WAIT_RET to 0 on
+# success, 1 on failure
+function wait_for_server_live_v2() {
+    local spid="$1"; shift
+    local wait_time_secs="${1:-30}"; shift
+
+    WAIT_RET=0
+
+    local wait_secs=$wait_time_secs
+    until test $wait_secs -eq 0 ; do
+        if ! kill -0 $spid; then
+            echo "=== Server not running."
+            WAIT_RET=1
+            return
+        fi
+
+        sleep 1;
+
+        set +e
+        code=`curl -s -w %{http_code} localhost:8000/v2/health/live`
+        set -e
+        if [ "$code" == "200" ]; then
+            return
+        fi
+
+        ((wait_secs--));
+    done
+
+    echo "=== Timeout $wait_time_secs secs. Server not live."
+    WAIT_RET=1
+}
+
+# Wait until all server model states are stable (MODEL_READY or
+# MODEL_UNAVAILABLE) or until timeout. Note that server has to be
+# live.  If timeout is not specified, only return when all model
+# states are stable.
+function wait_for_model_stable() {
+    local wait_time_secs="${1:--1}"; shift
+
+    local wait_secs=$wait_time_secs
+    until test $wait_secs -eq 0 ; do
+        sleep 1;
+
+        set +e
+        total_count=`curl -s localhost:8000/api/status | grep "MODEL_" | wc -l`
+        stable_count=`curl -s localhost:8000/api/status | grep "MODEL_READY\|MODEL_UNAVAILABLE" | wc -l`
+        count=$((total_count - stable_count))
+        set -e
+        if [ "$count" == "0" ]; then
+            return
+        fi
+
+        ((wait_secs--));
+    done
+
+    echo "=== Timeout $wait_time_secs secs. Not all models stable."
+}
+
 # Run inference server. Return once server's health endpoint shows
 # ready or timeout expires.  Sets SERVER_PID to pid of SERVER, or 0 if
 # error (including expired timeout)
 function run_server () {
     SERVER_PID=0
+
+    if [ -z "$SERVER" ]; then
+        echo "=== SERVER must be defined"
+        return
+    fi
+
     if [ ! -f "$SERVER" ]; then
         echo "=== $SERVER does not exist"
         return
     fi
 
-    echo "=== Running $SERVER $SERVER_ARGS"
-    $SERVER $SERVER_ARGS > $SERVER_LOG 2>&1 &
+    if [ -z "$SERVER_LD_PRELOAD" ]; then
+      echo "=== Running $SERVER $SERVER_ARGS"
+    else
+      echo "=== Running LD_PRELOAD=$SERVER_LD_PRELOAD $SERVER $SERVER_ARGS"
+    fi
+
+    LD_PRELOAD=$SERVER_LD_PRELOAD $SERVER $SERVER_ARGS > $SERVER_LOG 2>&1 &
     SERVER_PID=$!
 
-    wait_for_server_ready $SERVER_TIMEOUT
+    wait_for_server_ready $SERVER_PID $SERVER_TIMEOUT
+    if [ "$WAIT_RET" != "0" ]; then
+        kill $SERVER_PID || true
+        SERVER_PID=0
+    fi
+}
+
+# Run inference server. Return once HTTP V2 server's health endpoint shows
+# ready or timeout expires.  Sets SERVER_PID to pid of SERVER, or 0 if
+# error (including expired timeout)
+function run_server_v2 () {
+    SERVER_PID=0
+
+    if [ -z "$SERVER" ]; then
+        echo "=== SERVER must be defined"
+        return
+    fi
+
+    if [ ! -f "$SERVER" ]; then
+        echo "=== $SERVER does not exist"
+        return
+    fi
+
+    if [ -z "$SERVER_LD_PRELOAD" ]; then
+      echo "=== Running $SERVER $SERVER_ARGS"
+    else
+      echo "=== Running LD_PRELOAD=$SERVER_LD_PRELOAD $SERVER $SERVER_ARGS"
+    fi
+
+    LD_PRELOAD=$SERVER_LD_PRELOAD $SERVER $SERVER_ARGS > $SERVER_LOG 2>&1 &
+    SERVER_PID=$!
+
+    wait_for_server_ready_v2 $SERVER_PID $SERVER_TIMEOUT
     if [ "$WAIT_RET" != "0" ]; then
         kill $SERVER_PID || true
         SERVER_PID=0
@@ -138,16 +278,59 @@ function run_server () {
 # error (including expired timeout)
 function run_server_tolive () {
     SERVER_PID=0
+
+    if [ -z "$SERVER" ]; then
+        echo "=== SERVER must be defined"
+        return
+    fi
+
     if [ ! -f "$SERVER" ]; then
         echo "=== $SERVER does not exist"
         return
     fi
 
-    echo "=== Running $SERVER $SERVER_ARGS"
-    $SERVER $SERVER_ARGS > $SERVER_LOG 2>&1 &
+    if [ -z "$SERVER_LD_PRELOAD" ]; then
+      echo "=== Running $SERVER $SERVER_ARGS"
+    else
+      echo "=== Running LD_PRELOAD=$SERVER_LD_PRELOAD $SERVER $SERVER_ARGS"
+    fi
+
+    LD_PRELOAD=$SERVER_LD_PRELOAD $SERVER $SERVER_ARGS > $SERVER_LOG 2>&1 &
     SERVER_PID=$!
 
-    wait_for_server_live $SERVER_TIMEOUT
+    wait_for_server_live $SERVER_PID $SERVER_TIMEOUT
+    if [ "$WAIT_RET" != "0" ]; then
+        kill $SERVER_PID || true
+        SERVER_PID=0
+    fi
+}
+
+# Run inference server. Return once HTTP V2 server's health endpoint shows
+# live or timeout expires.  Sets SERVER_PID to pid of SERVER, or 0 if
+# error (including expired timeout)
+function run_server_tolive_v2 () {
+    SERVER_PID=0
+
+    if [ -z "$SERVER" ]; then
+        echo "=== SERVER must be defined"
+        return
+    fi
+
+    if [ ! -f "$SERVER" ]; then
+        echo "=== $SERVER does not exist"
+        return
+    fi
+
+    if [ -z "$SERVER_LD_PRELOAD" ]; then
+      echo "=== Running $SERVER $SERVER_ARGS"
+    else
+      echo "=== Running LD_PRELOAD=$SERVER_LD_PRELOAD $SERVER $SERVER_ARGS"
+    fi
+
+    LD_PRELOAD=$SERVER_LD_PRELOAD $SERVER $SERVER_ARGS > $SERVER_LOG 2>&1 &
+    SERVER_PID=$!
+
+    wait_for_server_live_v2 $SERVER_PID $SERVER_TIMEOUT
     if [ "$WAIT_RET" != "0" ]; then
         kill $SERVER_PID || true
         SERVER_PID=0
@@ -158,13 +341,24 @@ function run_server_tolive () {
 # of SERVER, or 0 if error
 function run_server_nowait () {
     SERVER_PID=0
+
+    if [ -z "$SERVER" ]; then
+        echo "=== SERVER must be defined"
+        return
+    fi
+
     if [ ! -f "$SERVER" ]; then
         echo "=== $SERVER does not exist"
         return
     fi
 
-    echo "=== Running $SERVER $SERVER_ARGS"
-    $SERVER $SERVER_ARGS > $SERVER_LOG 2>&1 &
+    if [ -z "$SERVER_LD_PRELOAD" ]; then
+      echo "=== Running $SERVER $SERVER_ARGS"
+    else
+      echo "=== Running LD_PRELOAD=$SERVER_LD_PRELOAD $SERVER $SERVER_ARGS"
+    fi
+
+    LD_PRELOAD=$SERVER_LD_PRELOAD $SERVER $SERVER_ARGS > $SERVER_LOG 2>&1 &
     SERVER_PID=$!
 }
 
@@ -183,11 +377,22 @@ function run_gpu_monitor () {
     nvidia-smi dmon -s u $MONITOR_ID_ARG -f $MONITOR_LOG &
     MONITOR_PID=$!
 
-    local exists_secs="$FILE_TIMEOUT"
+    local exists_secs="$MONITOR_FILE_TIMEOUT"
     until test $exists_secs -eq 0 -o -f "$MONITOR_LOG" ; do sleep 1; ((exists_secs--)); done
     if [ "$exists_secs" == "0" ]; then
         echo "=== Timeout. Unable to find '$MONITOR_LOG'"
         kill $MONITOR_PID || true
         MONITOR_PID=0
     fi
+}
+
+# Put libidentity.so model file into nop models in the model repository
+function create_nop_modelfile () {
+    local model_file=$1
+    local dest_dir=$2
+    for nop_model in `ls $dest_dir | grep "nop_"`; do
+        local path=$dest_dir/$nop_model
+        mkdir -p $path/1
+        cp $model_file $path/1/.
+    done
 }
